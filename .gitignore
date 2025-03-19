@@ -5,3 +5,6 @@ __pycache__/
 dist/
 *perf.csv
 *.png
+flash_mla/__pycache__
+tests/__pycache__
+.pyteset_cache/

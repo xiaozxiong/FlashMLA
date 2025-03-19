@@ -37,38 +37,48 @@ def cal_diff(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
     assert cos_diff < 1e-5
 
 
+# 
 @torch.inference_mode()
 def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen):
     print(
         f"{b=}, {s_q=}, {mean_sk=}, {h_q=}, {h_kv=}, {d=}, {dv=}, {causal=}, {varlen=}"
     )
-
+    # multiple sequences, batch size = b
     cache_seqlens = torch.full((b,), mean_sk, dtype=torch.int32)
+    #
     if varlen:
         for i in range(b):
             cache_seqlens[i] = max(random.normalvariate(mean_sk, mean_sk / 2), s_q)
-    total_seqlens = cache_seqlens.sum().item()
-    mean_seqlens = cache_seqlens.float().mean().int().item()
-    max_seqlen = cache_seqlens.max().item()
-    max_seqlen_pad = triton.cdiv(max_seqlen, 256) * 256
-    # print(f"{total_seqlens=}, {mean_seqlens=}, {max_seqlen=}")
-
+    #
+    total_seqlens = cache_seqlens.sum().item() # sum of all sequence lengths
+    mean_seqlens = cache_seqlens.float().mean().int().item() # mean of all sequence lengths
+    max_seqlen = cache_seqlens.max().item() # maximum of all sequence lengths
+    max_seqlen_pad = triton.cdiv(max_seqlen, 256) * 256 # padding to multiple of 256
+    print(f"{total_seqlens=}, {mean_seqlens=}, {max_seqlen=}")
+    
+    # (batch_size, seq_len_q, num_heads_q, head_dim)
     q = torch.randn(b, s_q, h_q, d)
+    #* paged attention
     block_size = 64
+    # the mapping between logical and physical KV blocks of each request
     block_table = torch.arange(
         b * max_seqlen_pad // block_size, dtype=torch.int32
     ).view(b, max_seqlen_pad // block_size)
+    print(f'block_table shape: {block_table.shape}')
+    #?
     blocked_k = torch.randn(block_table.numel(), block_size, h_kv, d)
+    print(f'blocked_k shape: {blocked_k.shape}')
     for i in range(b):
         blocked_k.view(b, max_seqlen_pad, h_kv, d)[i, cache_seqlens[i].item():] = (
             float("nan")
         )
     blocked_v = blocked_k[..., :dv]
-
+    #
     tile_scheduler_metadata, num_splits = get_mla_metadata(
         cache_seqlens, s_q * h_q // h_kv, h_kv
     )
 
+    # use FlashMLA
     def flash_mla():
         return flash_mla_with_kvcache(
             q,
@@ -80,7 +90,8 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen):
             num_splits,
             causal=causal,
         )
-
+    
+    # compute with torch
     def ref_mla():
         out = torch.empty(b, s_q, h_q, dv, dtype=torch.float32)
         lse = torch.empty(b, h_q, s_q, dtype=torch.float32)
@@ -126,10 +137,10 @@ def main(torch_dtype):
     d, dv = 576, 512
     causal = True
 
-    for b in [128]:
-        for s in [4096, 8192]:
-            for h_q in [16, 32, 64, 128]:  # TP = 8, 4, 2, 1
-                for s_q in [1, 2]:  # MTP = 1, 2
+    for b in [128]: #* batch size
+        for s in [4096, 8192]: #* sequence length
+            for h_q in [16, 32, 64, 128]: #* number of query head, # TP = 8, 4, 2, 1
+                for s_q in [1, 2]: #?  # MTP = 1, 2
                     for varlen in [False, True]:
                         test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 

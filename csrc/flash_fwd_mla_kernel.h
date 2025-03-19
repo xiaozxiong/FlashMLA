@@ -445,6 +445,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla(const Flash_f
         store<Kernel_traits, true>(params, bidb, bidh, m_block, n_split_idx, shared_storage, tOrO, softmax);
 }
 
+//* __launch_bounds__: specifies the maximum number of threads per block
+//* __launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor, maxBlocksPerCluster)
+//*__grid_constant__:  per-thread thread local copy
 template<typename Kernel_traits, bool Is_causal, typename SharedStorage>
 __global__ void __launch_bounds__(Kernel_traits::kNThreads, 1, 1)
 flash_fwd_splitkv_mla_kernel(__grid_constant__ const Flash_fwd_mla_params params) {
@@ -463,7 +466,7 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const Flash_fwd_mla_params params
     int end_idx = tile_scheduler_metadata.z;
     int end_seqlen = tile_scheduler_metadata.w;
     if (begin_idx >= params.b) return;
-    int begin_n_split_idx = __ldg(tile_scheduler_metadata_ptr + 4);
+    int begin_n_split_idx = __ldg(tile_scheduler_metadata_ptr + 4); // cached in the unified L1/texture cache
 
 #pragma unroll 1
     for (int batch_id = begin_idx; batch_id <= end_idx; ++batch_id) {
@@ -475,6 +478,7 @@ flash_fwd_splitkv_mla_kernel(__grid_constant__ const Flash_fwd_mla_params params
         if (batch_id > begin_idx) {
             __syncthreads();  // Barrier between two tiles.
         }
+        // 
         flash::compute_attn_1rowblock_splitkv_mla<Kernel_traits, Is_causal>(params, batch_id, bidh, m_block, n_split_idx, seqlen_k, n_block_min, n_block_max, NoSplit, shared_storage);
     }
 }
@@ -577,11 +581,16 @@ void run_flash_splitkv_fwd_mla(Flash_fwd_mla_params &params, cudaStream_t stream
     FLASH_ASSERT(params.page_block_size == Kernel_traits::kBlockN);
     const int num_m_block = cute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
+        // assign function pointer
         auto kernel = &flash::flash_fwd_splitkv_mla_kernel<Kernel_traits, Is_causal, SharedStorage>;
         constexpr size_t smem_size = sizeof(SharedStorage);
+        // set SMES size of kernel before launching it
+        // control certain runtime behaviors
         CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+        // launch kernel
         kernel<<<dim3(num_m_block, params.h, params.num_sm_parts), Kernel_traits::kNThreads, smem_size, stream>>>(params);
     });
+    // detect kernel errors
     CHECK_CUDA_KERNEL_LAUNCH();
 
     dim3 grid_combine(params.b * params.h * params.seqlen_q);
@@ -593,11 +602,16 @@ void run_flash_splitkv_fwd_mla(Flash_fwd_mla_params &params, cudaStream_t stream
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 
+//TODO: invoke in flash_api.cpp, T = fp16 or bf 16
 template<typename T, int Headdim>
 void run_mha_fwd_splitkv_mla(Flash_fwd_mla_params &params, cudaStream_t stream) {
     static_assert(Headdim == 576);
     FLASH_ASSERT(params.d_v == 512);
     FLASH_ASSERT(params.k_ptr == params.v_ptr);  // Shared_KV
-    using Kernel_traits = Flash_fwd_kernel_traits_mla<576, 64, 64, 8, T, 512>;
+    using Kernel_traits = Flash_fwd_kernel_traits_mla<576, 64, 64, 8, T, 512>; // kernel setting
     run_flash_splitkv_fwd_mla<Kernel_traits, flash::SharedStorageMLA<Kernel_traits>>(params, stream);
 }
+//* csrc/flash_fwd_mla_fp16_sm90.cu:
+// template void run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(Flash_fwd_mla_params &params, cudaStream_t stream);
+//* csrc/flash_fwd_mla_bf16_sm90.cu:
+// template void run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(Flash_fwd_mla_params &params, cudaStream_t stream);

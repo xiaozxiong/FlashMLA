@@ -23,6 +23,7 @@ def get_mla_metadata(
     return flash_mla_cuda.get_mla_metadata(cache_seqlens, num_heads_per_head_k, num_heads_k)
 
 
+# TODO: key function
 def flash_mla_with_kvcache(
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -52,6 +53,8 @@ def flash_mla_with_kvcache(
     """
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
+    print(f'q shape: {q.shape}, k_cache shape: {k_cache.shape}, block_table shape: {block_table.shape}, cache_seqlens shape: {cache_seqlens.shape}, head_dim_v: {head_dim_v}, tile_scheduler_metadata shape: {tile_scheduler_metadata.shape}, num_splits shape: {num_splits.shape}, softmax_scale: {softmax_scale}, causal: {causal}')
+    #! CUDA implementation
     out, softmax_lse = flash_mla_cuda.fwd_kvcache_mla(
         q,
         k_cache,

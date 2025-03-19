@@ -15,7 +15,7 @@ struct Flash_fwd_mla_params {
     void *__restrict__ k_ptr;
     void *__restrict__ v_ptr;
     void *__restrict__ o_ptr;
-    void *__restrict__ softmax_lse_ptr;
+    void *__restrict__ softmax_lse_ptr; // log-sum-exp (LSE)
 
     index_t q_batch_stride;
     index_t k_batch_stride;

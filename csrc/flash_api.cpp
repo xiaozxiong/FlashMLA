@@ -17,6 +17,7 @@
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 
+//TODO:
 std::vector<at::Tensor>
 get_mla_metadata(
     at::Tensor &seqlens_k,
@@ -189,6 +190,7 @@ mha_fwd_kvcache_mla(
     auto stream = at::cuda::getCurrentCUDAStream().stream();
     TORCH_CHECK(head_size == 576);
 
+    //TODO: function template
     if (q_dtype == torch::kBFloat16) {
         run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, stream);
     }
